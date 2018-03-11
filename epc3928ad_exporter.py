@@ -13,21 +13,20 @@ MODEM_ADDR = argv[3]
 LISTEN_ADDR = (argv[1], int(argv[2])) # addr, port
 
 elements = ['ch_pwr', 'ch_snr', 'up_pwr']
-help = {'ch_pwr': 'downstream power level\n',
-        'ch_snr': 'downstream signal to noise ratio\n',
-        'up_pwr': 'upstream power level\n',
-        'collector_duration_seconds': 'duration in seconds\n'}
+help = {'ch_pwr': 'downstream power level',
+        'ch_snr': 'downstream signal to noise ratio',
+        'up_pwr': 'upstream power level',
+        'collector_duration_seconds': 'duration in seconds'}
 
 # https://docs.python.org/3.6/library/http.server.html?highlight=basehttprequesthandler
 class http(BaseHTTPRequestHandler):
+    help_type_format = "# HELP modem_{0} {1}\n# TYPE modem_{0} gauge\n"
+    
     def _set_headers(self,code=200):
         self.send_response(code)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
     
-    def log_request(self, code="", size=""):
-        pass
-
     def do_HEAD(self):
         self._set_headers()
     
@@ -37,7 +36,7 @@ class http(BaseHTTPRequestHandler):
             if data:
                 self._set_headers()
                 for values in data:
-                    self.wfile.write(self.help_type_format().format(values, help[values]).encode('utf-8'))
+                    self.wfile.write(self.help_type_format.format(values, help[values]).encode('utf-8'))
                     for i, value in enumerate(data[values]):
                             self.wfile.write(self.write_format(values).format(values, i+1, value).encode('utf-8'))
             else:
@@ -48,21 +47,14 @@ class http(BaseHTTPRequestHandler):
         r = {}
         try:
             doc = html.parse("http://{}/Docsis_system.asp".format(MODEM_ADDR))
+            for element in elements:
+                data = doc.xpath('//td[contains(@headers, "{}")]/text()'.format(element))
+                r[element] = [float(i) for i in data]
+            r['collector_duration_seconds'] = [time()-t]
+            return r
         except Exception:
             return None
-        
-        for element in elements:
-            data = doc.xpath('//td[contains(@headers, "{}")]/text()'.format(element))
-            # Remove whitespaces. translate and normalize_space has unexpected behavior with negative values.
-            for i, value in enumerate(data):
-                data[i] = value.replace(" ", "")
-            r[element] = data
-        r['collector_duration_seconds'] = [str(time()-t)]
-        return r
-
-    def help_type_format(self):
-        return "# HELP modem_{0} {1}# TYPE modem_{0} gauge\n"
-
+    
     def write_format(self, values):
         template = 'modem_{0} {2}\n'
         if values in elements:
