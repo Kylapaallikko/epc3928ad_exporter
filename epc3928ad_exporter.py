@@ -1,13 +1,9 @@
 #!/usr/bin/env python
 """epc3928ad_exporter.py current up- and downstream signal values from EPC3928AD."""
 from sys import argv
+from time import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from lxml import html
-
-__author__ = "Kyläpäällikkö"
-__copyright__ = "Copyright 2018, Kyläpäällikkö"
-__license__ = "MIT"
-__version__ = "1.0"
 
 # Check if user gave necessary parameters
 if len(argv) < 4:
@@ -16,10 +12,16 @@ if len(argv) < 4:
 MODEM_ADDR = argv[3]
 LISTEN_ADDR = (argv[1], int(argv[2])) # addr, port
 
+elements = ['ch_pwr', 'ch_snr', 'up_pwr']
+help = {'ch_pwr': 'downstream power level\n',
+        'ch_snr': 'downstream signal to noise ratio\n',
+        'up_pwr': 'upstream power level\n',
+        'collector_duration_seconds': 'duration in seconds\n'}
+
 # https://docs.python.org/3.6/library/http.server.html?highlight=basehttprequesthandler
 class http(BaseHTTPRequestHandler):
-    def _set_headers(self):
-        self.send_response(200)
+    def _set_headers(self,code=200):
+        self.send_response(code)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
     
@@ -28,50 +30,46 @@ class http(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         self._set_headers()
-
+    
     def do_GET(self):
-        self._set_headers()
         if self.path == "/metrics":
-            data = self.fetch()
-            for values in data:
-                i = 1
-                self.wfile.write(self.help_type(values).encode('utf-8'))
-                for value in data[values]:
-                    self.wfile.write(('modem_%s{channel="%s"} %s\n' % (values, i, value)).encode('utf-8'))
-                    i += 1
-        else:
-            self.wfile.write("/metrics".encode('utf-8'))
+            data = self.collect()
+            if data:
+                self._set_headers()
+                for values in data:
+                    self.wfile.write(self.help_type_format().format(values, help[values]).encode('utf-8'))
+                    for i, value in enumerate(data[values]):
+                            self.wfile.write(self.write_format(values).format(values, i+1, value).encode('utf-8'))
+            else:
+                self._set_headers(500)
 
-    def help_type(self, value):
-        if value == "down_pwr":
-            return '# HELP modem_down_pwr Current dowmstream power level\n# TYPE modem_down_pwr gauge\n'
-        elif value == "down_snr":
-            return '# HELP modem_down_snr Current dowmstream signal to noise ratio\n# TYPE modem_down_snr gauge\n'
-        elif value == "up_pwr":
-            return '# HELP modem_up_pwr Current upstream power level\n# TYPE modem_up_pwr gauge\n'
-
-    def fetch(self):
+    def collect(self):
+        t = time()
+        r = {}
         try:
-            doc = html.parse('http://%s/Docsis_system.asp' % MODEM_ADDR)
-        except Exception as e:
-            raise Exception(e)
-        # DOWN
-        PWR = doc.xpath('//td[contains(@headers, "ch_pwr")]/text()')
-        SNR = doc.xpath('//td[contains(@headers, "ch_snr")]/text()')
-        # UP
-        UP = doc.xpath('//td[contains(@headers, "up_pwr")]/text()')
-        # Remove whitespaces. translate and normalize_space has unexpected behavior with negative values.
-        for values in [PWR, SNR, UP]:
-            i = 0
-            for value in values:
-                values[i] = value.replace(" ","")
-                i += 1
-        # Returns
-        return {'down_pwr': PWR,
-                'down_snr': SNR,
-                'up_pwr': UP}
+            doc = html.parse("http://{}/Docsis_system.asp".format(MODEM_ADDR))
+        except Exception:
+            return None
+        
+        for element in elements:
+            data = doc.xpath('//td[contains(@headers, "{}")]/text()'.format(element))
+            # Remove whitespaces. translate and normalize_space has unexpected behavior with negative values.
+            for i, value in enumerate(data):
+                data[i] = value.replace(" ", "")
+            r[element] = data
+        r['collector_duration_seconds'] = [str(time()-t)]
+        return r
+
+    def help_type_format(self):
+        return "# HELP modem_{0} {1}# TYPE modem_{0} gauge\n"
+
+    def write_format(self, values):
+        template = 'modem_{0} {2}\n'
+        if values in elements:
+            template = 'modem_{0}{{channel="{1}"}} {2}\n'
+        return template
 
 # Code execution begins here!
 httpd = HTTPServer(LISTEN_ADDR, http)
-print('http server started %s:%s' % LISTEN_ADDR)
+print('http server started {0[0]}:{0[1]}'.format(LISTEN_ADDR))
 httpd.serve_forever()
